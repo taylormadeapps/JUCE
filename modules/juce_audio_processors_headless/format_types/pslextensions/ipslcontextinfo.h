@@ -92,6 +92,26 @@ struct IContextInfoProvider2: IContextInfoProvider
 DECLARE_CLASS_IID (IContextInfoProvider2, 0x61e45968, 0x3d364f39, 0xb15e1733, 0x4944172b)
 
 //************************************************************************************************
+// IContextInfoProvider3
+/**	Extension to IContextInfoProvider and IContextInfoProvider2 enabling the plug-in to
+    signal begin and end of editing for context information values.
+	Use IComponentHandler2::startGroupEdit() and IComponentHandler2::endGroupEdit() to signal group edits. */
+//************************************************************************************************
+
+struct IContextInfoProvider3: IContextInfoProvider2
+{
+	/** Begin edit of context info value, \see also IComponentHandler::beginEdit. */
+	virtual Steinberg::tresult PLUGIN_API beginEditContextInfoValue (Steinberg::FIDString id) = 0;
+
+	/** End edit of context info value, \see also IComponentHandler::endEdit. */
+	virtual Steinberg::tresult PLUGIN_API endEditContextInfoValue (Steinberg::FIDString id) = 0;
+
+    static const Steinberg::FUID iid;
+};
+
+DECLARE_CLASS_IID (IContextInfoProvider3, 0x4e31fdf8, 0x6f4448d4, 0xb4ec1461, 0x68a4150f)
+
+//************************************************************************************************
 // IContextInfoHandler
 /**	Notification interface for context information changes. Implemented by the plug-in as extension of
 	Steinberg::Vst::IEditController. */

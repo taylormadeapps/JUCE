@@ -32,10 +32,61 @@
   ==============================================================================
 */
 
+namespace Steinberg
+{
+namespace Vst
+{
+class IEditController;
+}
+}
+
 namespace juce
 {
 
 #if JUCE_INTERNAL_HAS_VST3 || DOXYGEN
+
+/** Allows a VST3 host application to expose additional host-side interfaces to
+    a hosted plug-in through the VST3 component handler.
+
+    Implementations should set obj to the queried interface pointer and return
+    true if the interface is supported. If the interface is not supported, set
+    obj to nullptr and return false.
+
+    This is the host-side counterpart to VST3ClientExtensions: it lets a JUCE
+    host provide vendor or application-specific VST3 host extensions without
+    replacing JUCE's built-in VST3 hosting implementation.
+
+    @tags{Audio}
+*/
+struct JUCE_API VST3HostContextExtensions
+{
+    virtual ~VST3HostContextExtensions() = default;
+
+    /** Called from the VST3 component handler's queryInterface() implementation
+        after JUCE's built-in host interfaces have been checked.
+
+        Implementations that return an interface pointer must follow normal VST3
+        COM lifetime rules and increment the returned object's reference count
+        before storing it in obj.
+    */
+    virtual bool queryIComponentHandler (const Steinberg::TUID iid, void** obj)
+    {
+        *obj = nullptr;
+        ignoreUnused (iid);
+        return false;
+    }
+
+    /** Called after JUCE has resolved the plug-in edit controller, and again
+        with nullptr before the controller is detached.
+
+        This allows host extensions to discover optional vendor-specific
+        interfaces implemented by the edit controller without exposing JUCE's
+        internal VST3PluginInstance implementation.
+    */
+    virtual void setIEditController (Steinberg::Vst::IEditController*)
+    {
+    }
+};
 
 /**
     Implements a plugin format for VST3s.
@@ -47,6 +98,23 @@ class JUCE_API VST3PluginFormatHeadless   : public AudioPluginFormat
 public:
     /** Constructor */
     VST3PluginFormatHeadless() = default;
+
+    /** A factory that can provide additional host-side VST3 interfaces for a
+        newly created plug-in instance.
+
+        Returning nullptr keeps JUCE's default VST3 host behaviour unchanged.
+        The returned object is owned by the VST3 host context for that plug-in
+        instance and will be destroyed with it.
+    */
+    using HostContextExtensionFactory = std::function<std::unique_ptr<VST3HostContextExtensions> (const PluginDescription&)>;
+
+    /** Sets a factory that will be consulted for each VST3 instance created by
+        this format.
+
+        The factory is called during plug-in instantiation, before the hosted
+        plug-in receives the JUCE VST3 component handler.
+    */
+    void setHostContextExtensionFactory (HostContextExtensionFactory);
 
     //==============================================================================
     /** @cond */
@@ -76,11 +144,17 @@ public:
     FileSearchPath getDefaultLocationsToSearch() override;
     void createARAFactoryAsync (const PluginDescription&, ARAFactoryCreationCallback callback) override;
 
+protected:
+    //==============================================================================
+    std::unique_ptr<VST3HostContextExtensions> createHostContextExtensions (const PluginDescription&) const;
+
 private:
     //==============================================================================
     void createPluginInstance (const PluginDescription&, double initialSampleRate,
                                int initialBufferSize, PluginCreationCallback) override;
     bool requiresUnblockedMessageThreadDuringCreation (const PluginDescription&) const override;
+
+    HostContextExtensionFactory hostContextExtensionFactory;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VST3PluginFormatHeadless)
 };

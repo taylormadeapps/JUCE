@@ -51,6 +51,19 @@ bool VST3PluginFormatHeadless::setStateFromVSTPresetFile (AudioPluginInstance* a
     return false;
 }
 
+void VST3PluginFormatHeadless::setHostContextExtensionFactory (HostContextExtensionFactory factory)
+{
+    hostContextExtensionFactory = std::move (factory);
+}
+
+std::unique_ptr<VST3HostContextExtensions> VST3PluginFormatHeadless::createHostContextExtensions (const PluginDescription& description) const
+{
+    if (hostContextExtensionFactory != nullptr)
+        return hostContextExtensionFactory (description);
+
+    return {};
+}
+
 void VST3PluginFormatHeadless::findAllTypesForFile (OwnedArray<PluginDescription>& results, const String& fileOrIdentifier)
 {
     if (! fileMightContainThisPluginType (fileOrIdentifier))
@@ -111,7 +124,7 @@ void VST3PluginFormatHeadless::createPluginInstance (const PluginDescription& de
                                                      PluginCreationCallback callback)
 {
     createVst3InstanceImpl<VST3PluginInstanceHeadless> (*this,
-                                                        { new VST3HostContextHeadless(), IncrementRef::no },
+                                                        { new VST3HostContextHeadless (createHostContextExtensions (description)), IncrementRef::no },
                                                         description,
                                                         callback);
 }

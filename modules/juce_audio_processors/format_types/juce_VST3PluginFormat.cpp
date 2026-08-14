@@ -47,6 +47,11 @@ JUCE_BEGIN_NO_SANITIZE ("vptr")
 class VST3HostContextWithContextMenu : public VST3HostContextHeadless
 {
 public:
+    explicit VST3HostContextWithContextMenu (std::unique_ptr<VST3HostContextExtensions> extensions = {})
+        : VST3HostContextHeadless (std::move (extensions))
+    {
+    }
+
     Vst::IContextMenu* PLUGIN_API createContextMenu (IPlugView*, const Vst::ParamID*) override
     {
         if (auto* p = getPlugin())
@@ -639,7 +644,7 @@ void VST3PluginFormat::createPluginInstance (const PluginDescription& descriptio
                                              PluginCreationCallback callback)
 {
     createVst3InstanceImpl<VST3PluginInstance> (*this,
-                                                { new VST3HostContextWithContextMenu, IncrementRef::no },
+                                                { new VST3HostContextWithContextMenu (createHostContextExtensions (description)), IncrementRef::no },
                                                 description,
                                                 callback);
 }

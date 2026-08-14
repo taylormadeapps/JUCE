@@ -563,7 +563,8 @@ struct VST3HostContextHeadless : public Vst::IComponentHandler,
                                  public RunLoop,
                                  private ComponentRestarter::Listener
 {
-    VST3HostContextHeadless()
+    explicit VST3HostContextHeadless (std::unique_ptr<VST3HostContextExtensions> extensions = {})
+        : hostContextExtensions (std::move (extensions))
     {
         appName = File::getSpecialLocation (File::currentApplicationFile).getFileNameWithoutExtension();
     }
@@ -670,18 +671,36 @@ struct VST3HostContextHeadless : public Vst::IComponentHandler,
     //==============================================================================
     tresult PLUGIN_API queryInterface (const TUID iidToQuery, void** obj) override
     {
-        return testForMultiple (*this,
-                                iidToQuery,
-                                UniqueBase<Vst::IComponentHandler>{},
-                                UniqueBase<Vst::IComponentHandler2>{},
-                                UniqueBase<Vst::IComponentHandler3>{},
-                                UniqueBase<Vst::IContextMenuTarget>{},
-                                UniqueBase<Vst::IHostApplication>{},
-                                UniqueBase<Vst::IUnitHandler>{},
-                               #if JUCE_LINUX || JUCE_BSD
-                                UniqueBase<Linux::IRunLoop>{},
-                               #endif
-                                SharedBase<FUnknown, Vst::IComponentHandler>{}).extract (obj);
+        const auto result = testForMultiple (*this,
+                                             iidToQuery,
+                                             UniqueBase<Vst::IComponentHandler>{},
+                                             UniqueBase<Vst::IComponentHandler2>{},
+                                             UniqueBase<Vst::IComponentHandler3>{},
+                                             UniqueBase<Vst::IContextMenuTarget>{},
+                                             UniqueBase<Vst::IHostApplication>{},
+                                             UniqueBase<Vst::IUnitHandler>{},
+                                            #if JUCE_LINUX || JUCE_BSD
+                                             UniqueBase<Linux::IRunLoop>{},
+                                            #endif
+                                             SharedBase<FUnknown, Vst::IComponentHandler>{}).extract (obj);
+
+        if (result == kResultOk)
+            return result;
+
+        if (hostContextExtensions != nullptr)
+        {
+            *obj = nullptr;
+
+            if (hostContextExtensions->queryIComponentHandler (iidToQuery, obj))
+            {
+                jassert (*obj != nullptr);
+
+                if (*obj != nullptr)
+                    return kResultOk;
+            }
+        }
+
+        return result;
     }
 
     VST3PluginInstanceHeadless* getPlugin() const
@@ -689,11 +708,18 @@ struct VST3HostContextHeadless : public Vst::IComponentHandler,
         return plugin;
     }
 
+    void setIEditController (Vst::IEditController* editController)
+    {
+        if (hostContextExtensions != nullptr)
+            hostContextExtensions->setIEditController (editController);
+    }
+
 private:
     //==============================================================================
     VST3PluginInstanceHeadless* plugin = nullptr;
     Atomic<int> refCount { 1 };
     String appName;
+    std::unique_ptr<VST3HostContextExtensions> hostContextExtensions;
 
     ComponentRestarter componentRestarter { *this };
 
@@ -2163,6 +2189,7 @@ public:
             componentConnection->disconnect (editControllerConnection.get());
         }
 
+        holder->host->setIEditController (nullptr);
         editController->setComponentHandler (nullptr);
 
         if (isControllerInitialised && ! holder->isIComponentAlsoIEditController())
@@ -2204,6 +2231,7 @@ public:
 
         isControllerInitialised = true;
         editController->setComponentHandler (holder->host.get());
+        holder->host->setIEditController (editController.get());
         grabInformationObjects();
         interconnectComponentAndController();
 

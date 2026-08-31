@@ -86,10 +86,56 @@ struct AudioPluginExtensions
     /** Can be used to retrieve information about a VST3 that is wrapped by an AudioProcessor. */
     struct VST3Client
     {
+        enum class ControllerDestructionPreparationResult
+        {
+            prepared,
+            connectionDisconnectFailed,
+            componentHandlerDetachFailed,
+            controllerTerminationFailed,
+        };
+
+        enum class ProcessorDestructionPreparationResult
+        {
+            prepared,
+            componentTerminationFailed,
+        };
+
         virtual ~VST3Client() = default;
         virtual Steinberg::Vst::IComponent* getIComponentPtr() const noexcept = 0;
         virtual MemoryBlock getPreset() const = 0;
         virtual bool setPreset (const MemoryBlock&) = 0;
+
+        /** Stops the message-thread parameter dispatcher without releasing any
+            controller-side VST3 interfaces.
+
+            The active editor must already have been deleted, and this must be
+            called on the message thread. A host can then drain remaining
+            run-loop sources against a still-alive controller before calling
+            prepareControllerForHostDestruction().
+        */
+        virtual void stopControllerParameterDispatcher() = 0;
+
+        /** Disconnects, detaches and terminates the controller-side VST3
+            interfaces without destroying the processor component.
+
+            The dispatcher must already have been stopped, the active editor must
+            already have been deleted, and this must be called on the message
+            thread. The operation is idempotent and reports the first failed VST3
+            teardown operation. On failure every controller-side interface is
+            retained so a host can fail closed before destroying the
+            AudioPluginInstance.
+        */
+        virtual ControllerDestructionPreparationResult prepareControllerForHostDestruction() = 0;
+
+        /** Terminates and releases the VST3 processor component without returning
+            any work to the message thread.
+
+            The controller must already have been prepared, releaseResources()
+            must already have completed, and the host must have crossed its
+            post-release message-thread barrier. A failed component terminate is
+            retained and reported to the host instead of being silently released.
+        */
+        virtual ProcessorDestructionPreparationResult prepareProcessorForHostDestruction() = 0;
     };
 
     /** Can be used to retrieve information about an AudioUnit that is wrapped by an AudioProcessor. */

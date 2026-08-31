@@ -128,7 +128,7 @@ static std::vector<Vst::ParamID> getAllParamIDs (Vst::IEditController& controlle
 class EditControllerParameterDispatcher final : private Timer
 {
 public:
-    ~EditControllerParameterDispatcher() override { stopTimer(); }
+    ~EditControllerParameterDispatcher() override { stop(); }
 
     void push (Steinberg::int32 index, float value)
     {
@@ -148,8 +148,18 @@ public:
         startTimerHz (60);
     }
 
+    void stop()
+    {
+        stopTimer();
+        controller = nullptr;
+        cache = {};
+    }
+
     void flush()
     {
+        if (controller == nullptr)
+            return;
+
         cache.ifSet ([this] (Steinberg::int32 index, float value)
         {
             controller->setParamNormalized (cache.getParamID (index), value);
@@ -1685,15 +1695,20 @@ struct VST3ComponentHolder
         return true;
     }
 
-    void terminate()
+    tresult terminate()
     {
         if (isComponentInitialised)
         {
-            component->terminate();
+            const auto result = component->terminate();
+
+            if (result != kResultOk)
+                return result;
+
             isComponentInitialised = false;
         }
 
         component = nullptr;
+        return kResultOk;
     }
 
     //==============================================================================
@@ -2174,40 +2189,127 @@ public:
 
     ~VST3PluginInstanceHeadless() override
     {
+        if (controllerPreparedForDestruction && processorPreparedForDestruction)
+            return;
+
         MessageManager::callSync ([this] { cleanup(); });
     }
 
-    void cleanup()
+    void stopControllerParameterDispatcher() override
     {
-        jassert (getActiveEditor() == nullptr); // You must delete any editors before deleting the plugin instance!
+        JUCE_ASSERT_MESSAGE_THREAD
+        parameterDispatcher.stop();
+    }
 
-        releaseResources();
+    ControllerDestructionPreparationResult prepareControllerForHostDestruction() override
+    {
+        JUCE_ASSERT_MESSAGE_THREAD
+
+        if (controllerPreparationAttempted)
+            return controllerPreparationResult;
+
+        controllerPreparationAttempted = true;
+
+        jassert (getActiveEditor() == nullptr); // You must delete any editors before retiring the controller!
+
+        // The dispatcher owns a raw IEditController pointer and runs from the
+        // message-thread timer queue. Stop it before releasing any controller
+        // interface; otherwise a queued timer callback can enter a partially
+        // destroyed controller while the processor wrapper dies elsewhere.
+        parameterDispatcher.stop();
+
+        auto recordFailure = [this] (tresult result, ControllerDestructionPreparationResult failure)
+        {
+            const bool failed = result != kResultOk;
+            if (failed && controllerPreparationResult == ControllerDestructionPreparationResult::prepared)
+                controllerPreparationResult = failure;
+            return failed;
+        };
 
         if (editControllerConnection != nullptr && componentConnection != nullptr)
         {
-            editControllerConnection->disconnect (componentConnection.get());
-            componentConnection->disconnect (editControllerConnection.get());
+            if (recordFailure (editControllerConnection->disconnect (componentConnection.get()),
+                               ControllerDestructionPreparationResult::connectionDisconnectFailed)
+                || recordFailure (componentConnection->disconnect (editControllerConnection.get()),
+                                  ControllerDestructionPreparationResult::connectionDisconnectFailed))
+            {
+                return controllerPreparationResult;
+            }
         }
 
         holder->host->setIEditController (nullptr);
-        editController->setComponentHandler (nullptr);
 
-        if (isControllerInitialised && ! holder->isIComponentAlsoIEditController())
-            editController->terminate();
+        if (editController != nullptr)
+        {
+            if (recordFailure (editController->setComponentHandler (nullptr),
+                               ControllerDestructionPreparationResult::componentHandlerDetachFailed))
+            {
+                return controllerPreparationResult;
+            }
 
-        holder->terminate();
+            if (isControllerInitialised && ! holder->isIComponentAlsoIEditController()
+                && recordFailure (editController->terminate(),
+                                  ControllerDestructionPreparationResult::controllerTerminationFailed))
+            {
+                return controllerPreparationResult;
+            }
+        }
 
         componentConnection = nullptr;
         editControllerConnection = nullptr;
+        trackInfoListener = nullptr;
         unitData = nullptr;
         unitInfo = nullptr;
         programListData = nullptr;
         componentHandler2 = nullptr;
         componentHandler = nullptr;
-        processor = nullptr;
         midiMapping = nullptr;
         editController2 = nullptr;
         editController = nullptr;
+        isControllerInitialised = false;
+        controllerPreparedForDestruction = true;
+        return controllerPreparationResult;
+    }
+
+    ProcessorDestructionPreparationResult prepareProcessorForHostDestruction() override
+    {
+        if (processorPreparationAttempted)
+            return processorPreparationResult;
+
+        processorPreparationAttempted = true;
+
+        releaseResources();
+
+        if (holder->terminate() != kResultOk)
+        {
+            processorPreparationResult = ProcessorDestructionPreparationResult::componentTerminationFailed;
+            return processorPreparationResult;
+        }
+
+        processor = nullptr;
+        processorPreparedForDestruction = true;
+        return processorPreparationResult;
+    }
+
+    void cleanup()
+    {
+        const bool alreadyFailedCheckedTeardown =
+            (controllerPreparationAttempted
+             && controllerPreparationResult != ControllerDestructionPreparationResult::prepared)
+            || (processorPreparationAttempted
+                && processorPreparationResult != ProcessorDestructionPreparationResult::prepared);
+
+        if (alreadyFailedCheckedTeardown)
+        {
+            // Retirement already failed closed and contained this wrapper. Destroying
+            // it now would Release interfaces that refused teardown.
+            std::abort();
+        }
+
+        // First destructor (failed initialise, ordinary unique_ptr reset).
+        // Do not abort: a refused load must not kill the sandbox.
+        prepareControllerForHostDestruction();
+        prepareProcessorForHostDestruction();
     }
 
     //==============================================================================
@@ -3086,7 +3188,13 @@ private:
     VSTComSmartPtr<MidiEventList> midiInputs { new MidiEventList, IncrementRef::yes };
     VSTComSmartPtr<MidiEventList> midiOutputs { new MidiEventList, IncrementRef::yes };
     Vst::ProcessContext timingInfo; //< Only use this in processBlock()!
-    bool isControllerInitialised = false, isActive = false, lastProcessBlockCallWasBypass = false;
+    ControllerDestructionPreparationResult controllerPreparationResult =
+        ControllerDestructionPreparationResult::prepared;
+    ProcessorDestructionPreparationResult processorPreparationResult =
+        ProcessorDestructionPreparationResult::prepared;
+    bool isControllerInitialised = false, controllerPreparationAttempted = false,
+         controllerPreparedForDestruction = false, processorPreparationAttempted = false,
+         processorPreparedForDestruction = false, isActive = false, lastProcessBlockCallWasBypass = false;
     const bool hasMidiInput  = getNumSingleDirectionBusesFor (holder->component.get(), MediaKind::event, Direction::input) > 0,
                hasMidiOutput = getNumSingleDirectionBusesFor (holder->component.get(), MediaKind::event, Direction::output) > 0;
     VST3Parameter* bypassParam = nullptr;

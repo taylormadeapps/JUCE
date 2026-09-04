@@ -2278,8 +2278,6 @@ public:
 
         processorPreparationAttempted = true;
 
-        releaseResources();
-
         if (holder->terminate() != kResultOk)
         {
             processorPreparationResult = ProcessorDestructionPreparationResult::componentTerminationFailed;
@@ -2309,6 +2307,7 @@ public:
         // First destructor (failed initialise, ordinary unique_ptr reset).
         // Do not abort: a refused load must not kill the sandbox.
         prepareControllerForHostDestruction();
+        releaseResources();
         prepareProcessorForHostDestruction();
     }
 

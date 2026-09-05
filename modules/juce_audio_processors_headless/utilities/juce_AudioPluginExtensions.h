@@ -121,9 +121,8 @@ struct AudioPluginExtensions
             The dispatcher must already have been stopped, the active editor must
             already have been deleted, and this must be called on the message
             thread. The operation is idempotent and reports the first failed VST3
-            teardown operation. On failure every controller-side interface is
-            retained so a host can fail closed before destroying the
-            AudioPluginInstance.
+            teardown operation. Error returns do not veto subsequent teardown
+            or interface release. Exceptions propagate to the host.
         */
         virtual ControllerDestructionPreparationResult prepareControllerForHostDestruction() = 0;
 
@@ -132,8 +131,8 @@ struct AudioPluginExtensions
 
             The controller must already have been prepared, releaseResources()
             must already have completed, and the host must have crossed its
-            post-release message-thread barrier. A failed component terminate is
-            retained and reported to the host instead of being silently released.
+            post-release message-thread barrier. A component terminate error is
+            reported after releasing its interfaces; exceptions propagate.
         */
         virtual ProcessorDestructionPreparationResult prepareProcessorForHostDestruction() = 0;
     };

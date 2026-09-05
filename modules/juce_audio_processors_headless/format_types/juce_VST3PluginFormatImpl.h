@@ -1697,18 +1697,15 @@ struct VST3ComponentHolder
 
     tresult terminate()
     {
+        tresult result = kResultOk;
         if (isComponentInitialised)
         {
-            const auto result = component->terminate();
-
-            if (result != kResultOk)
-                return result;
-
+            result = component->terminate();
             isComponentInitialised = false;
         }
 
         component = nullptr;
-        return kResultOk;
+        return result;
     }
 
     //==============================================================================
@@ -2228,31 +2225,22 @@ public:
 
         if (editControllerConnection != nullptr && componentConnection != nullptr)
         {
-            if (recordFailure (editControllerConnection->disconnect (componentConnection.get()),
-                               ControllerDestructionPreparationResult::connectionDisconnectFailed)
-                || recordFailure (componentConnection->disconnect (editControllerConnection.get()),
-                                  ControllerDestructionPreparationResult::connectionDisconnectFailed))
-            {
-                return controllerPreparationResult;
-            }
+            recordFailure (editControllerConnection->disconnect (componentConnection.get()),
+                           ControllerDestructionPreparationResult::connectionDisconnectFailed);
+            recordFailure (componentConnection->disconnect (editControllerConnection.get()),
+                           ControllerDestructionPreparationResult::connectionDisconnectFailed);
         }
 
         holder->host->setIEditController (nullptr);
 
         if (editController != nullptr)
         {
-            if (recordFailure (editController->setComponentHandler (nullptr),
-                               ControllerDestructionPreparationResult::componentHandlerDetachFailed))
-            {
-                return controllerPreparationResult;
-            }
+            recordFailure (editController->setComponentHandler (nullptr),
+                           ControllerDestructionPreparationResult::componentHandlerDetachFailed);
 
-            if (isControllerInitialised && ! holder->isIComponentAlsoIEditController()
-                && recordFailure (editController->terminate(),
-                                  ControllerDestructionPreparationResult::controllerTerminationFailed))
-            {
-                return controllerPreparationResult;
-            }
+            if (isControllerInitialised && ! holder->isIComponentAlsoIEditController())
+                recordFailure (editController->terminate(),
+                               ControllerDestructionPreparationResult::controllerTerminationFailed);
         }
 
         componentConnection = nullptr;
@@ -2281,7 +2269,6 @@ public:
         if (holder->terminate() != kResultOk)
         {
             processorPreparationResult = ProcessorDestructionPreparationResult::componentTerminationFailed;
-            return processorPreparationResult;
         }
 
         processor = nullptr;
@@ -2291,21 +2278,8 @@ public:
 
     void cleanup()
     {
-        const bool alreadyFailedCheckedTeardown =
-            (controllerPreparationAttempted
-             && controllerPreparationResult != ControllerDestructionPreparationResult::prepared)
-            || (processorPreparationAttempted
-                && processorPreparationResult != ProcessorDestructionPreparationResult::prepared);
-
-        if (alreadyFailedCheckedTeardown)
-        {
-            // Retirement already failed closed and contained this wrapper. Destroying
-            // it now would Release interfaces that refused teardown.
-            std::abort();
-        }
-
-        // First destructor (failed initialise, ordinary unique_ptr reset).
-        // Do not abort: a refused load must not kill the sandbox.
+        // Vendor status codes are diagnostic. The host owns instance lifetime
+        // and still releases each interface after attempting its teardown.
         prepareControllerForHostDestruction();
         releaseResources();
         prepareProcessorForHostDestruction();

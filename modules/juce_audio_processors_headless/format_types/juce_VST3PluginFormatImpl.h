@@ -3653,8 +3653,11 @@ void VST3HostContextHeadless::restartComponentOnMessageThread (int32 flags)
     if (hasFlag (flags, Vst::kParamTitlesChanged))
         plugin->updateParameterInfo();
 
-    plugin->updateHostDisplay (AudioProcessorListener::ChangeDetails().withProgramChanged (true)
-                                                                      .withParameterInfoChanged (true));
+    // setLatencySamples already reports a latency-only change. Do not also
+    // invalidate the parameter catalogue when its contents have not changed.
+    if (flags != Vst::kLatencyChanged)
+        plugin->updateHostDisplay (AudioProcessorListener::ChangeDetails().withProgramChanged (true)
+                                                                          .withParameterInfoChanged (true));
 }
 
 //==============================================================================

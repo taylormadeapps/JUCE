@@ -354,7 +354,21 @@ static void toProcessContext (Vst::ProcessContext& context,
     if (position.hasValue())
     {
         if (const auto timeInSamples = position->getTimeInSamples())
+        {
             context.projectTimeSamples = *timeInSamples;
+
+            // VST3's continuous time is the project sample position with loop
+            // wrapping removed. Where no loop is active, the two coordinates
+            // are definitionally identical, including TayPE's offline render
+            // path. Do not claim validity during a real loop: AudioPlayHead has
+            // no authoritative lap count, and fabricating one here would make
+            // the plugin clock disagree with the engine transport owner.
+            if (! position->getIsLooping())
+            {
+                context.state |= ProcessContext::kContTimeValid;
+                context.continousTimeSamples = *timeInSamples;
+            }
+        }
         else
             jassertfalse; // The time in samples *must* be valid.
 

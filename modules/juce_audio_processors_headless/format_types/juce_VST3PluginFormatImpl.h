@@ -637,6 +637,17 @@ struct VST3HostContextHeadless : public Vst::IComponentHandler,
         plugin = instance;
     }
 
+    // TayPE's VST3 I/O notification seam (see restartComponent).
+    void setTaypeIoChangeRecordingEnabled (bool enabled) noexcept
+    {
+        taypeIoChangeRecordingEnabled.store (enabled, std::memory_order_release);
+    }
+
+    unsigned int takeTaypeIoChangeFlags() noexcept
+    {
+        return taypeIoChangeFlags.exchange (0, std::memory_order_acq_rel);
+    }
+
     //==============================================================================
     Vst::IContextMenu* PLUGIN_API createContextMenu (IPlugView*, const Vst::ParamID*) override
     {
@@ -742,6 +753,11 @@ private:
     //==============================================================================
     VST3PluginInstanceHeadless* plugin = nullptr;
     Atomic<int> refCount { 1 };
+
+    // restartComponent may arrive on any plug-in thread, so the I/O-change
+    // record is these atomics alone and never touches the instance.
+    std::atomic<bool> taypeIoChangeRecordingEnabled { false };
+    std::atomic<unsigned int> taypeIoChangeFlags { 0 };
     String appName;
     std::unique_ptr<VST3HostContextExtensions> hostContextExtensions;
 
@@ -2206,6 +2222,29 @@ public:
     {
         jassert (holder->isComponentInitialised);
         holder->host->setPlugin (this);
+
+        // TayPE: sized once, because the bus count never changes and
+        // prepareToPlay records into these while it holds processMutex.
+        taypeInputBusActivations.assign (static_cast<size_t> (getBusCount (true)), -1);
+        taypeOutputBusActivations.assign (static_cast<size_t> (getBusCount (false)), -1);
+    }
+
+    // TayPE: the I/O-change record lives on the host context, which is what
+    // the plug-in calls, so restartComponent never reaches into this instance.
+    void setTaypeIoChangeRecordingEnabled (bool enabled) noexcept override
+    {
+        holder->host->setTaypeIoChangeRecordingEnabled (enabled);
+    }
+
+    unsigned int takeTaypeIoChangeFlags() noexcept override
+    {
+        return holder->host->takeTaypeIoChangeFlags();
+    }
+
+    int getTaypeAudioBusActivationResult (bool isInput, int index) const noexcept override
+    {
+        const auto& results = isInput ? taypeInputBusActivations : taypeOutputBusActivations;
+        return index >= 0 && static_cast<size_t> (index) < results.size() ? results[static_cast<size_t> (index)] : -1;
     }
 
     ~VST3PluginInstanceHeadless() override
@@ -2473,11 +2512,22 @@ public:
         auto numInputBuses  = getBusCount (true);
         auto numOutputBuses = getBusCount (false);
 
+        // TayPE: keep each activation result instead of discarding it.
         for (int i = 0; i < numInputBuses; ++i)
-            warnOnFailure (holder->component->activateBus (Vst::kAudio, Vst::kInput,  i, getBus (true,  i)->isEnabled() ? 1 : 0));
+        {
+            const auto result = holder->component->activateBus (Vst::kAudio, Vst::kInput,  i, getBus (true,  i)->isEnabled() ? 1 : 0);
+            (void) warnOnFailure (result);
+            if (static_cast<size_t> (i) < taypeInputBusActivations.size())
+                taypeInputBusActivations[static_cast<size_t> (i)] = result == kResultOk ? 1 : 0;
+        }
 
         for (int i = 0; i < numOutputBuses; ++i)
-            warnOnFailure (holder->component->activateBus (Vst::kAudio, Vst::kOutput, i, getBus (false, i)->isEnabled() ? 1 : 0));
+        {
+            const auto result = holder->component->activateBus (Vst::kAudio, Vst::kOutput, i, getBus (false, i)->isEnabled() ? 1 : 0);
+            (void) warnOnFailure (result);
+            if (static_cast<size_t> (i) < taypeOutputBusActivations.size())
+                taypeOutputBusActivations[static_cast<size_t> (i)] = result == kResultOk ? 1 : 0;
+        }
 
         setLatencySamples (jmax (0, (int) processor->getLatencySamples()));
 
@@ -3090,6 +3140,10 @@ private:
     //==============================================================================
     std::unique_ptr<VST3ComponentHolder> holder;
 
+    // TayPE: each bus's activation result at the last prepareToPlay.
+    std::vector<int> taypeInputBusActivations;
+    std::vector<int> taypeOutputBusActivations;
+
     friend VST3HostContextHeadless;
 
     // Rudimentary interfaces:
@@ -3619,6 +3673,20 @@ tresult VST3HostContextHeadless::endEdit (Vst::ParamID paramID)
 
 tresult VST3HostContextHeadless::restartComponent (Steinberg::int32 flags)
 {
+    // TayPE keeps a plug-in's declared layout: an I/O change is recorded for
+    // the sandbox to report, not applied. This part is safe on any thread.
+    if (taypeIoChangeRecordingEnabled.load (std::memory_order_acquire))
+    {
+        constexpr auto taypeIoFlags = Vst::kIoChanged | Vst::kIoTitlesChanged;
+        if (const auto reported = flags & taypeIoFlags; reported != 0)
+            taypeIoChangeFlags.fetch_or (static_cast<unsigned int> (reported), std::memory_order_release);
+        flags &= ~taypeIoFlags;
+
+        // Only I/O flags: there is nothing left for JUCE to restart.
+        if (flags == 0)
+            return kResultTrue;
+    }
+
     // If you hit this, the plugin has requested a restart from a thread other than
     // the UI thread. JUCE should be able to cope, but you should consider filing a bug
     // report against the plugin.

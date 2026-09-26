@@ -74,6 +74,13 @@ public:
     */
     PluginDescription getPluginDescription() const;
 
+    // Host-specific VST3 I/O notification seam. Other plug-in formats retain
+    // their normal behaviour; only the sandbox opts an instance into it.
+    virtual void setTaypeIoChangeRecordingEnabled (bool) noexcept {}
+    virtual unsigned int takeTaypeIoChangeFlags() noexcept { return 0; }
+    // -1: not reported, 0: refused, 1: accepted.
+    virtual int getTaypeAudioBusActivationResult (bool, int) const noexcept { return -1; }
+
     /** Obsolete: Prefer to use getVSTClient(), getVST3Client(),
         getAudioUnitClient(), and/or getARAClient().
     */
